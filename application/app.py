@@ -1,150 +1,129 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+import streamlit as st
 import pandas as pd
+import plotly.express as px
+import pyodbc
+import tempfile
 import os
-from pathlib import Path
-import re
-from datetime import datetime, timedelta
 
-# Constants
-COLUMNS_TO_READ = [
-    'sheetStart', 'shift', 'section', 'employeeCode', 'employeeName',
-    'category', 'subCategory', 'activityCode', 'activity', 'blockStart',
-    'periodStart', 'periodName', 'workedStart', 'workedMinutes'
-]
+# Set Streamlit to wide mode
+st.set_page_config(layout="wide")
 
-def extract_rows_by_date_range(folder_path, start_date, end_date):
-    """Extract rows from CSV files within a date range."""
-    data_frames = []
-    start_date, end_date = pd.to_datetime(start_date), pd.to_datetime(end_date)
-    
-    for file_path in Path(folder_path).glob('*.csv'):
-        try:
-            df = pd.read_csv(file_path, usecols=COLUMNS_TO_READ)
-            df['sheetStart'] = pd.to_datetime(df['sheetStart'].str[:10], errors='coerce')
-            filtered_df = df[(df['sheetStart'] >= start_date) & (df['sheetStart'] <= end_date)].copy()
-            if not filtered_df.empty:
-                filtered_df['source_file'] = file_path.name
-                filtered_df['workedHours'] = filtered_df['workedMinutes'] / 60
-                data_frames.append(filtered_df)
-        except Exception as e:
-            messagebox.showerror("Error", f"Error processing {file_path.name}: {e}")
-    
-    return pd.concat(data_frames, ignore_index=True) if data_frames else pd.DataFrame()
+# Function to connect to Access Database and load data from a query and convert to CSV
+def convert_access_to_df(file_path):
+    try:
+        conn_str = (
+            r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
+            r'DBQ=' + file_path + ';'
+        )
+        conn = pyodbc.connect(conn_str)
+        query = 'SELECT * FROM [data query]'  # Replace with your query name
+        df = pd.read_sql(query, conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Error loading or converting data: {e}")
+        return None
 
-def merge_with_financial_periods(filtered_data, financial_periods_df):
-    """Merge filtered data with financial periods data."""
-    filtered_data['sheetStart'] = pd.to_datetime(filtered_data['sheetStart'], errors='coerce')
-    financial_periods_df['Date'] = pd.to_datetime(financial_periods_df['Date'], errors='coerce')
-    return pd.merge(filtered_data, financial_periods_df, left_on='sheetStart', right_on='Date', how='left')
+# App layout and functionality
+st.title("Volume Data Analysis")
 
-def get_next_sequence_number(output_directory):
-    """Get the next sequence number for the output file."""
-    files = os.listdir(output_directory)
-    sequence_numbers = [
-        int(re.match(r'filtered_merged_data_(\d+).csv', file).group(1))
-        for file in files if re.match(r'filtered_merged_data_(\d+).csv', file)
-    ]
-    return max(sequence_numbers, default=0) + 1
+# Step 1: Upload the Access Database file
+uploaded_file = st.file_uploader("Upload Volume.accdb file", type="accdb")
+if uploaded_file:
+    if uploaded_file.name.endswith('.accdb'):
+        # Save the uploaded file to a temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.accdb') as tmp_file:
+            tmp_file.write(uploaded_file.getbuffer())
+            tmp_file_path = tmp_file.name
 
-def browse_folder():
-    folder_path = filedialog.askdirectory()
-    folder_entry.delete(0, tk.END)
-    folder_entry.insert(0, folder_path)
-    update_date_options(folder_path)
-
-def browse_financial_periods_file():
-    file_path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
-    financial_periods_entry.delete(0, tk.END)
-    financial_periods_entry.insert(0, file_path)
-
-def browse_output_folder():
-    folder_path = filedialog.askdirectory()
-    output_folder_entry.delete(0, tk.END)
-    output_folder_entry.insert(0, folder_path)
-
-def update_date_options(folder_path):
-    if os.path.isdir(folder_path):
-        date_options = set()
-        for file_path in Path(folder_path).glob('*.csv'):
-            try:
-                df = pd.read_csv(file_path, usecols=['sheetStart'])
-                df['sheetStart'] = pd.to_datetime(df['sheetStart'].str[:10], errors='coerce')
-                date_options.update(df['sheetStart'].dropna().dt.strftime('%Y-%m-%d').tolist())
-            except Exception as e:
-                messagebox.showerror("Error", f"Error processing {file_path.name}: {e}")
+        # Convert Access to DataFrame (done only once and stored in session state)
+        if "df" not in st.session_state:
+            with st.spinner("Converting Access database to DataFrame..."):
+                st.session_state.df = convert_access_to_df(tmp_file_path)
         
-        date_options = sorted(list(date_options))
+        df = st.session_state.df
         
-        start_date_combo['values'] = date_options
-        end_date_combo['values'] = date_options
+        if df is not None:
+            st.success(f"Successfully loaded data from Access database.")
+            
+            # Step 2: Load data into memory for filtering and charting
+            if df is not None and not df.empty:
+                # Sidebar filters
+                st.sidebar.header("Filters")
+                
+                # Create a copy of the original DataFrame for filtering
+                filtered_df = df.copy()
 
-def filter_and_export():
-    folder_path = folder_entry.get()
-    financial_periods_path = financial_periods_entry.get()
-    output_directory = output_folder_entry.get()
-    start_date = start_date_combo.get()
-    end_date = end_date_combo.get()
-    
-    if not os.path.isdir(folder_path):
-        messagebox.showerror("Error", "Please enter a valid folder path.")
-        return
-    
-    if start_date > end_date:
-        messagebox.showerror("Error", "End date must be after start date.")
-        return
-    
-    filtered_data = extract_rows_by_date_range(folder_path, start_date, end_date)
-    if not filtered_data.empty:
-        try:
-            financial_periods_df = pd.read_csv(financial_periods_path)
-        except Exception as e:
-            messagebox.showerror("Error", f"Error reading financial periods file: {e}")
-            return
+                # Dynamically apply filters
+                filters = {
+                    "Units": "Units",
+                    "Function_": "Function_",
+                    "Cost Category": "Cost Category",
+                    "T_dept_Vol": "T_dept_Vol",
+                    "T_dept": "T_dept"
+                }
+
+                for key, column in filters.items():
+                    if column in filtered_df.columns:
+                        selected = st.sidebar.multiselect(key, options=filtered_df[column].unique())
+                        if selected:
+                            filtered_df = filtered_df[filtered_df[column].isin(selected)]
+
+                # Handle missing values before plotting
+                filtered_df = filtered_df.fillna(0)
+
+                # Ensure Wk_no_ is treated as numeric
+                filtered_df["Wk_no_"] = pd.to_numeric(filtered_df["Wk_no_"], errors='coerce')
+
+                # Layout: Create two columns
+                col1, col2 = st.columns([1, 1])  # Equal width columns for wide layout
+
+                # Column 1: Time Series Graph and 2nd Bar Chart - Shifts by Day
+                with col1:
+                    # Time Series Graph with Plotly (Summing Value Total per Week and sorting by Wk_no_)
+                    df_weekly = filtered_df.groupby("Wk_no_")["Value Total"].sum().reset_index()
+
+                    # Ensure the data is sorted by Wk_no_
+                    df_weekly = df_weekly.sort_values(by="Wk_no_")
+
+                    # Create the time series plot without specifying width to let it adapt
+                    fig1 = px.line(df_weekly, x="Wk_no_", y="Value Total", title="Time Series Graph of Value Total by Week No")
+                    fig1.update_layout(xaxis_title="Week No", yaxis_title="Value Total", height=500)  # Adjust height only
+                    st.plotly_chart(fig1, use_container_width=True)  # Use container width
+
+                    # Define the correct order of days
+                    day_order = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+                    
+                    # Convert Day_ column to categorical with correct order
+                    filtered_df["Day_"] = pd.Categorical(filtered_df["Day_"], categories=day_order, ordered=True)
+
+                    # 2nd Bar Chart: Shifts color coded by day using Plotly
+                    df_grouped_day = filtered_df.groupby(["Day_", "Shifts"])["Value Total"].sum().reset_index()
+                    fig3 = px.bar(df_grouped_day, x="Day_", y="Value Total", color="Shifts", title="Bar Chart of Volume by Shifts by Day")
+                    fig3.update_layout(xaxis_title="Day", yaxis_title="Value Total", height=500)  # Adjust height only
+                    st.plotly_chart(fig3, use_container_width=True)  # Use container width
+
+                # Column 2: 1st Bar Chart - Shifts by Week
+                with col2:
+                    df_grouped = filtered_df.groupby(["Wk_no_", "Shifts"])["Value Total"].sum().reset_index()
+                    fig2 = px.bar(df_grouped, x="Wk_no_", y="Value Total", color="Shifts", title="Bar Chart of Volume by Shifts by Week")
+                    fig2.update_layout(xaxis_title="Week No", yaxis_title="Value Total", height=1000)  # Adjust height only
+                    st.plotly_chart(fig2, use_container_width=True)  # Use container width
+
+                # Option to download filtered dataset
+                st.sidebar.subheader("Download Filtered Data")
+                csv = filtered_df.to_csv(index=False)
+                st.sidebar.download_button(
+                    label="Download Filtered CSV",
+                    data=csv,
+                    file_name='filtered_data.csv',
+                    mime='text/csv'
+                )
+            else:
+                st.warning("No data to display. Please check your query or file format.")
         
-        merged_data = merge_with_financial_periods(filtered_data, financial_periods_df)
-        os.makedirs(output_directory, exist_ok=True)
-        next_sequence_number = get_next_sequence_number(output_directory)
-        output_file_path = os.path.join(output_directory, f'filtered_merged_data_{next_sequence_number}.csv')
-        merged_data.to_csv(output_file_path, index=False)
-        messagebox.showinfo("Success", f"Filtered and merged data has been exported to {output_file_path}")
+        # Clean up the temporary file
+        if os.path.exists(tmp_file_path):
+            os.remove(tmp_file_path)
     else:
-        messagebox.showinfo("No Data", "No matching rows found.")
-
-# Create the main window
-root = tk.Tk()
-root.title("CSV Date Range Filter, Merge, and Export")
-
-# Folder Path Input
-tk.Label(root, text="Folder Path:").grid(row=0, column=0, padx=10, pady=5, sticky=tk.W)
-folder_entry = tk.Entry(root, width=50)
-folder_entry.grid(row=0, column=1, padx=10, pady=5)
-tk.Button(root, text="Browse", command=browse_folder).grid(row=0, column=2, padx=10, pady=5)
-
-# Financial Periods File Input
-tk.Label(root, text="Financial Periods CSV:").grid(row=1, column=0, padx=10, pady=5, sticky=tk.W)
-financial_periods_entry = tk.Entry(root, width=50)
-financial_periods_entry.grid(row=1, column=1, padx=10, pady=5)
-tk.Button(root, text="Browse", command=browse_financial_periods_file).grid(row=1, column=2, padx=10, pady=5)
-
-# Output Folder Path Input
-tk.Label(root, text="Output Folder:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
-output_folder_entry = tk.Entry(root, width=50)
-output_folder_entry.grid(row=2, column=1, padx=10, pady=5)
-tk.Button(root, text="Browse", command=browse_output_folder).grid(row=2, column=2, padx=10, pady=5)
-
-# Start Date Dropdown
-tk.Label(root, text="Start Date:").grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
-start_date_combo = ttk.Combobox(root, width=18)
-start_date_combo.grid(row=3, column=1, padx=10, pady=5, sticky=tk.W)
-
-# End Date Dropdown
-tk.Label(root, text="End Date:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
-end_date_combo = ttk.Combobox(root, width=18)
-end_date_combo.grid(row=4, column=1, padx=10, pady=5, sticky=tk.W)
-
-# Filter and Export Button
-tk.Button(root, text="Filter and Export", command=filter_and_export).grid(row=5, column=1, padx=10, pady=20)
-
-# Start the main event loop
-root.mainloop()
+        st.error("Please upload a valid .accdb file.")
