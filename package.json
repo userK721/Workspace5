@@ -32,12 +32,12 @@
   "stlite": {
     "desktop": {
       "files": [
-        "application/app.py"
+        "application/app.py",
+        "application/custom_pyodbc.py"
       ],
       "entrypoint": "./application/app.py",
       "dependencies": [
  	 "pandas",
- 	 "pyodbc",
  	 "statsmodels",
  	 "plotly",
  	 "scipy"

@@ -65,7 +65,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install setuptools wheel
-          pip install pyodbc --no-binary :all:  # Install pyodbc from source
 
       - name: Install npm dependencies
         run: npm install

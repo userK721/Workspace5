@@ -4,6 +4,11 @@ import plotly.express as px
 import pyodbc
 import tempfile
 import os
+import sys
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(script_dir)
+import custom_pyodbc
 
 # Set Streamlit to wide mode
 st.set_page_config(layout="wide")
@@ -15,7 +20,7 @@ def convert_access_to_df(file_path):
             r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
             r'DBQ=' + file_path + ';'
         )
-        conn = pyodbc.connect(conn_str)
+        conn = custom_pyodbc.connect(conn_str)
         query = 'SELECT * FROM [data query]'  # Replace with your query name
         df = pd.read_sql(query, conn)
         conn.close()
